@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -68,11 +69,13 @@ def test_health_route_is_mounted_at_the_desktop_namespace(monkeypatch):
 
 
 def test_active_provider_resolves_from_config_yaml(monkeypatch, tmp_path):
-    (tmp_path / "config.yaml").write_text(
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
         "model:\n  default: ox-alpha-free\n  provider: opencode-go\n"
         "  base_url: https://opencode.ai/zen/go/v1\n",
         encoding="utf-8",
     )
+    os.chmod(config_path, 0o600)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     body = make_client().get("/api/plugins/usage-stats/active_provider").json()
@@ -81,10 +84,12 @@ def test_active_provider_resolves_from_config_yaml(monkeypatch, tmp_path):
 
 
 def test_active_provider_unknown_config_returns_null(monkeypatch, tmp_path):
-    (tmp_path / "config.yaml").write_text(
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
         "model:\n  default: some-model\n  provider: gemini\n",
         encoding="utf-8",
     )
+    os.chmod(config_path, 0o600)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     body = make_client().get("/api/plugins/usage-stats/active_provider").json()

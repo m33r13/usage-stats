@@ -27,7 +27,9 @@ import json
 import logging
 import math
 import os
+import pwd
 import ssl
+import stat
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +64,62 @@ WINDOWS = [
 # In-memory cache for /summary to limit upstream load and abuse (finding #6).
 _SUMMARY_CACHE_TTL_SECONDS = 45
 _summary_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+# --- validated home directory (pitfall 29: never trust raw expanduser) --------
+
+
+def _home_dir() -> str | None:
+    """The real home directory: ``$HOME`` when it is absolute and exists, else
+    the passwd entry.  ``os.path.expanduser("~")`` returns ``/`` for an empty
+    ``HOME``, which would silently relocate every config path."""
+    home = os.environ.get("HOME", "")
+    if home and home != "/" and os.path.isabs(home) and os.path.isdir(home):
+        return home
+    try:
+        candidate = pwd.getpwuid(os.getuid()).pw_dir or None
+        return candidate if candidate and candidate != "/" else None
+    except (ImportError, KeyError, OSError):
+        return None
+
+
+def _validated_home() -> str | None:
+    """HERMES_HOME when it exists and is trustworthy, else a validated fallback."""
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if hermes_home:
+        real = os.path.realpath(hermes_home)
+        if os.path.isdir(real):
+            try:
+                st = os.stat(real)
+                if stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid():
+                    return real
+            except OSError:
+                pass
+    base = _home_dir()
+    if base:
+        candidate = os.path.join(base, ".hermes")
+        real = os.path.realpath(candidate)
+        if os.path.isdir(real):
+            return real
+    return None
+
+
+def _check_file_integrity(path: str) -> bool:
+    """Verify a config file is safe to read: regular file, owned by us,
+    not a symlink, and not world-writable."""
+    try:
+        if os.path.islink(path):
+            return False
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        if st.st_uid != os.getuid():
+            return False
+        if st.st_mode & 0o077:  # world- or group-readable/writable
+            return False
+        return True
+    except OSError:
+        return False
 
 
 def _read_key(env_name: str) -> str | None:
@@ -509,8 +567,13 @@ def _configured_provider() -> str | None:
     The Desktop composer reports a bare model id ('ox-alpha-free') with no
     provider hint, so the chip asks the backend which provider serves it.
     """
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    with open(os.path.join(home, "config.yaml"), encoding="utf-8") as handle:
+    home = _validated_home()
+    if not home:
+        return None
+    config_path = os.path.join(home, "config.yaml")
+    if not _check_file_integrity(config_path):
+        return None
+    with open(config_path, encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
     model_config = config.get("model") or {}
     return (
